@@ -1,12 +1,11 @@
 from setuptools import setup, find_packages
-import glob
 
 setup(
     name='kpi-mpc',
     package_dir={'': 'src'},
     packages=find_packages('src'),
     scripts=[],
-    url='https://gitlab.ifremer.fr/lops-wave/kpi_mpc',
+    url='https://github.com/tlechauveCLS/kpi_mpc',
     use_scm_version=True,
     setup_requires=['setuptools_scm'],
     include_package_data=True,
@@ -19,7 +18,7 @@ setup(
     entry_points={
     },
     license='MIT',
-    author='Antoine Grouazel',
-    author_email='Antoine.grouazel@ifremer.fr',
+    author='Antoine Grouazel, Thomas Lechauve',
+    author_email='Antoine.grouazel@ifremer.fr, tlechauve@groupcls.com',
     description='libraries to compute Key Performance Indicators for Mission Performance Center (Sentinel-1 SAR mission)'
 )

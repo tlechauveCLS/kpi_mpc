@@ -6,6 +6,8 @@ libs to compute 2 KPIs  for MPC Sentinel-1 project:
 # author:
     IFREMER LOPS
     antoine.grouazel@ifremer.fr
+    CLS
+    tlechauve@groupcls.com
 # creation:
     2021
     
