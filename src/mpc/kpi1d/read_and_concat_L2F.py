@@ -51,7 +51,7 @@ def preprocess_L2F(ds, variables=None, add_ecmwf_wind=True):
     # #         logging.info('%s is str')
     # #     logging.info('vv : %s dtype %s',vv,ds[vv].dtype)
     # #for dd in ds.dims:
-#    if 'dataset' in ds.dims:
+    #    if 'dataset' in ds.dims:
     ds = ds.assign_coords({'dataset': ['sar', 'ww3']})  # to fix a S1B 20210223 file...
     # logging.info('ds.dims  %s ',ds.dims)
     # logging.info('ds %s',ds)
@@ -102,9 +102,9 @@ def read_L2F_with_xarray(start, stop, satellites=['S1A', 'S1B'], variables=None,
             logging.debug(kk)
         if len(listnc) > 0:
             t0 = time.time()
-            #logging.info('nested')
+            # logging.info('nested')
             tmpds = xarray.open_mfdataset(listnc, preprocess=lambda ds: preprocess_L2F(ds, variables, add_ecmwf_wind),
-                                          combine='by_coords')#, concat_dim='fdatedt')
+                                          combine='by_coords')  # , concat_dim='fdatedt')
             ds_dict_sat[sensor] = tmpds
 
     return ds_dict_sat
@@ -139,7 +139,7 @@ if __name__ == '__main__':
     test_vars = None
     sat = ['S1A', 'S1B']
     ds_sat = read_L2F_with_xarray(start, stop, satellites=['S1A', 'S1B'], variables=None, alternative_L2F_path=None,
-                         add_ecmwf_wind=True)
+                                  add_ecmwf_wind=True)
     logging.info(ds_sat.keys())
     logging.info('var = %s', ds_sat[sat[0]].keys())
     logging.info('nb dates : %s', len(ds_sat[sat[0]]['fdatedt']))
