@@ -16,9 +16,13 @@ setup(
         'scipy>=1.3.1',
     ],
     entry_points={
+        'console_scripts': {
+            'compute_kpi_1b=mpc.kpi1b.compute_kpi_1b:main'
+        }
     },
     license='MIT',
     author='Antoine Grouazel, Thomas Lechauve',
     author_email='Antoine.grouazel@ifremer.fr, tlechauve@groupcls.com',
-    description='libraries to compute Key Performance Indicators for Mission Performance Center (Sentinel-1 SAR mission)'
+    description='libraries to compute Key Performance Indicators for Mission Performance Center (Sentinel-1 SAR mission)',
+    namespace_packages=['mpc']
 )

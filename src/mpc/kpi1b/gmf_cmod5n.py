@@ -38,7 +38,7 @@
 ;  evince ./code2pdf/cmod5n.pdf
 ;
 '''
-from gmf_base import GMFBase
+from mpc.kpi1b.gmf_base import GMFBase
 import numpy as np
 
 

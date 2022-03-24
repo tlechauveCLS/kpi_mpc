@@ -1,5 +1,5 @@
 import numpy as np
-from format_angle import format_angle
+from mpc.kpi1b.format_angle import format_angle
 
 
 def method_wind_azi_range(wind_u, wind_v, trackangle):
