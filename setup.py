@@ -17,7 +17,8 @@ setup(
     ],
     entry_points={
         'console_scripts': {
-            'compute_kpi_1b=mpc.kpi1b.compute_kpi_1b:main'
+            'compute_kpi_1b=mpc.kpi1b.compute_kpi_1b:main',
+            'compute_kpi_1d=mpc.kpi1d.compute_kpi_1d_v8:main'
         }
     },
     license='MIT',

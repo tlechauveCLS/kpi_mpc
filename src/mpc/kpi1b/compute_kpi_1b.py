@@ -16,7 +16,8 @@ import resource
 from dateutil.parser import parse as parse_date
 import numpy as np
 import os
-from mpc.kpi1b.reader import read_fat_calib_nc, SATELLITE_LIST
+from mpc.common import get_parameter, SATELLITE_LIST, WV_LIST, LOG_FORMAT
+from mpc.kpi1b.reader import read_fat_calib_nc
 
 POLARIZATION = 'VV'
 MODE = 'WV'
@@ -26,11 +27,7 @@ PRIOR_PERIOD = 3  # months
 LAT_MAX = 55
 MIN_DIST_2_COAST = 100  # km
 
-WV_LIST = ['wv1', 'wv2']
-
 log = logging.getLogger('mpc.compute_kpi_1b')
-
-LOG_FORMAT = '%(asctime)s %(levelname)s %(filename)s(%(lineno)d) %(message)s'
 
 
 class KPI1BData:
@@ -178,24 +175,6 @@ def setup_log(debug=False):
     log.setLevel(logging.DEBUG if debug else logging.INFO)
     log.addHandler(handler)
     log.propagate = False
-
-
-def get_parameter(name, config: ConfigParser, args, required=False, format=None):
-    value = None
-
-    if name in args:
-        value = getattr(args, name)
-
-    if value is None and 'DEFAULT' in config and name in config['DEFAULT']:
-        value = config.get('DEFAULT', name)
-
-    if value is None and required:
-        raise AttributeError(f'Missing {name} parameter.')
-
-    if value is not None and format:
-        value = format(value)
-
-    return value
 
 
 def main():

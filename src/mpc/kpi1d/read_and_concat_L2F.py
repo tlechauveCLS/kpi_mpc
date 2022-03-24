@@ -2,15 +2,17 @@
 """
 read and concatenate daily files variables into a xarray Datatset
 """
-import time
-import xarray
+import datetime
 import glob
 import logging
-import datetime
+
 import numpy as np
 import os
-import resource
-from src.config import DIR_L2F_WV_DAILY
+import xarray
+
+from mpc.common import SATELLITE_LIST
+
+log = logging.getLogger('mpc.compute_kpi_1d.read_concat_l2f')
 
 
 def preprocess_L2F(ds, variables=None, add_ecmwf_wind=True):
@@ -20,15 +22,13 @@ def preprocess_L2F(ds, variables=None, add_ecmwf_wind=True):
     :param variables:
     :return:
     """
-    filee = ds.encoding['source']
-    # logging.info(os.path.basename(filee))
     ds = ds.sortby('fdatedt')
     if variables is not None:
         ds = ds[variables]
         for kk in ds.keys():
-            logging.debug('test kk : %s', kk)
+            log.debug('test kk : %s', kk)
             if 'dataset' in ds[kk].dims:
-                logging.debug('split %s in S1 + WW3 vars')
+                log.debug('split %s in S1 + WW3 vars')
                 ds[kk + '_ww3'] = xarray.DataArray(ds[kk][:, 1].values,
                                                    dims=['fdatedt'])  # checked in partition_wv_xassignement.py
                 ds[kk + '_s1'] = xarray.DataArray(ds[kk][:, 0].values, dims=['fdatedt'])
@@ -37,57 +37,39 @@ def preprocess_L2F(ds, variables=None, add_ecmwf_wind=True):
         ds['ecmwf_wind_speed'] = xarray.DataArray(tmpval, dims=['fdatedt'])
     if 'pol' in ds:
         ds['pol'] = ds['pol'].astype(str)
-    #     #logging.info('pol dtype %s',ds['pol'].dtype)
-    # # if 'class_1' in ds:
-    # #     logging.info('class_1 dtype %s',ds['class_1'].dtype)
-    # #     logging.info('class_1 val %s',ds['class_1'].values)
-    # #     ds['class_1'] = ds['class_1'].astype(str)
-    # for vv in ds:
-    #     if ds[vv].dtype!='float32':
-    #         logging.info('%s %s is %s',os.path.basename(filee),vv,ds[vv].dtype)
-    # #     if ds[vv].dtype=='byte':
-    # #         logging.info('%s is byte')
-    # #     elif ds[vv].dtype=='str':
-    # #         logging.info('%s is str')
-    # #     logging.info('vv : %s dtype %s',vv,ds[vv].dtype)
-    # #for dd in ds.dims:
-    #    if 'dataset' in ds.dims:
+
     ds = ds.assign_coords({'dataset': ['sar', 'ww3']})  # to fix a S1B 20210223 file...
-    # logging.info('ds.dims  %s ',ds.dims)
-    # logging.info('ds %s',ds)
     return ds
 
 
-def read_L2F_with_xarray(start, stop, satellites=['S1A', 'S1B'], variables=None, alternative_L2F_path=None,
-                         add_ecmwf_wind=True):
+def read_L2F_with_xarray(start, stop, l2f_path, satellites=None, variables=None, add_ecmwf_wind=True):
     """
 
     :param start:
     :param stop:
     :param satellites:
     :param variables:
-    :param alternative_L2F_path:
+    :param l2f_path:
     :param add_ecmwf_wind :bool
     :return:
     """
+    if not satellites:
+        satellites = SATELLITE_LIST
+
     if isinstance(start, datetime.date):
         start = datetime.datetime(start.year, start.month, start.day)
     if isinstance(stop, datetime.date):
         stop = datetime.datetime(stop.year, stop.month, stop.day)
-    logging.info('Sentinel-1 L2F lecture between %s and %s', start, stop)
+    log.info('Sentinel-1 L2F lecture between %s and %s', start, stop)
     ds_dict_sat = {}
     for satr in satellites:
         ds_dict_sat[satr] = {}
     for sensor in satellites:  # pas de S1B pour le moment car pas de fichier avec les varaibles cross assigned 28 janvier 2020
-        if alternative_L2F_path is None:
-            datadir = DIR_L2F_WV_DAILY
-        else:
-            datadir = alternative_L2F_path
         if start.year == stop.year:
-            pat = os.path.join(datadir, start.strftime('%Y'), '*', sensor + '*nc')
+            pat = os.path.join(l2f_path, start.strftime('%Y'), '*', sensor + '*nc')
         else:
-            pat = os.path.join(datadir, '*', '*', sensor + '*nc')
-        logging.info('pattern to search for L2F =%s', pat)
+            pat = os.path.join(l2f_path, '*', '*', sensor + '*nc')
+        log.info('pattern to search for L2F =%s', pat)
         listnc0 = sorted(glob.glob(pat))[::-1]
         listnc = []
         dates = []
@@ -96,13 +78,11 @@ def read_L2F_with_xarray(start, stop, satellites=['S1A', 'S1B'], variables=None,
             if datdt >= start and datdt <= stop and datdt not in dates:
                 listnc.append(ff)
                 dates.append(datdt)
-        logging.info("nb files found without date filter = %s", len(listnc0))
-        logging.info("nb files found with date filter = %s", len(listnc))
+        log.info(f"nb files found without date filter = {len(listnc0)}", )
+        log.info(f"nb files found with date filter = {len(listnc)}")
         for kk in listnc:
-            logging.debug(kk)
+            log.debug(kk)
         if len(listnc) > 0:
-            t0 = time.time()
-            # logging.info('nested')
             tmpds = xarray.open_mfdataset(listnc, preprocess=lambda ds: preprocess_L2F(ds, variables, add_ecmwf_wind),
                                           combine='by_coords')  # , concat_dim='fdatedt')
             ds_dict_sat[sensor] = tmpds

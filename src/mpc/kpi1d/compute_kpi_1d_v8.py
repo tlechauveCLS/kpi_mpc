@@ -5,14 +5,22 @@ implementaiton : IFREMER
 Dec 2021: after SR#3 + ORR to adjust the KPI
 KPI-1d SLA Vol3 document MPC contract 2021 - 2016
 """
-import os
-import logging
-import numpy as np
+import argparse
 import datetime
+import logging
+import sys
+import textwrap
 import time
+from configparser import ConfigParser
+
+import numpy as np
+import os
+import resource
 import xarray
-from read_and_concat_L2F import read_L2F_with_xarray
-from src.config import EXTRACTION_SERIES_L2F_FOR_LONGTERM_MONITORING_L2, OUTPUTDIR_KPI_1D
+from dateutil.parser import parse as parse_date
+
+from mpc.common import get_parameter, SATELLITE_LIST, WV_LIST, LOG_FORMAT
+from mpc.kpi1d.read_and_concat_L2F import read_L2F_with_xarray
 
 POLARIZATION = 'VV'
 MODE = 'WV'
@@ -24,15 +32,42 @@ MIN_DIST_2_COAST = 100  # km
 MS = {'wv1': -6.5, 'wv2': -15.}  # NRCS central values dB
 DS = {'wv1': 3, 'wv2': 5}  # delta
 
+log = logging.getLogger('mpc.compute_kpi_1d')
 
-def load_Level2_series(satellite, start, stop, alternative_L2F=None):
+
+class KPI1DData:
+
+    def __init__(self, value: float, start: datetime, stop: datetime, envelop_value: float, count: int,
+                 mean_bias: float, std: float):
+        """
+        :param value: float between 0 and 100 %
+        :param start: Start of the current month
+        :param stop: Stop datetime of the current month
+        :param envelop_value: 2-sigma dB threshold based on 3 months prior period
+        :param count: Total number of measure
+        :param mean_bias:
+        :param std:
+        """
+        self.value = value
+        self.start = start
+        self.stop = stop
+        self.envelop_value = envelop_value
+        self.count = count
+        self.mean_bias = mean_bias
+        self.std = std
+
+    def __repr__(self):
+        return f'{self.value} {self.start} {self.stop} {self.envelop_value} {self.count} {self.std}'
+
+
+def load_Level2_series(satellite, start, stop, l2f_path):
     """
 
     :param satellite: str S1A or ...
     :return:
     """
 
-    logging.info('load L2F data')
+    log.info('load L2F data')
     vv = ['oswQualityFlagPartition1', 'fdatedt', 'oswLon', 'oswLat', 'oswHeading',
           's1_effective_hs_2Dcutoff', 'ecmwf0125_uwind', 'ecmwf0125_vwind',
           'oswIncidenceAngle', 'oswLandFlag', 'dist2coastKM', 'pol', 'class_1',
@@ -46,13 +81,10 @@ def load_Level2_series(satellite, start, stop, alternative_L2F=None):
           'oswXA_wl_ww3spec_thirdSARpartition',
           'oswXA_wl_ww3spec_fourthSARpartition', 'oswXA_wl_ww3spec_fifthSARpartition'
           ]
-    ds_dict_sat = read_L2F_with_xarray(start, stop, satellites=[satellite], variables=vv,
-                                       alternative_L2F_path=alternative_L2F,
+    ds_dict_sat = read_L2F_with_xarray(start, stop, l2f_path, satellites=[satellite], variables=vv,
                                        add_ecmwf_wind=True)
-    #   ds_dict_sat = get_data_from_L2F(start, stop, satellites=[satellite], variables=vv, alternative_L2F_path=alternative_L2F,addpolygones=False)
     dswv = ds_dict_sat[satellite]
-    # dswv = xarray.Dataset(dswv)
-    logging.info('dswv type %s', type(dswv))
+    log.info('dswv type %s', type(dswv))
     if dswv != {}:
         # drop Nan
         dswv = dswv.where(
@@ -60,11 +92,11 @@ def load_Level2_series(satellite, start, stop, alternative_L2F=None):
     return dswv
 
 
-def compute_kpi_1d(sat, wv, dev=False, stop_analysis_period=None, period_analysed_width=30, df=None,
-                   alternative_L2F=None):
+def compute_kpi_1d(sat, wv, l2f_path, dev=False, stop_analysis_period=None, period_analysed_width=30, df=None):
     """
     osw VV WV S-1 effective Hs (2D-cutoff) compared to WWIII Hs computed on same grid/same mask
     note that low freq mask is applied both on S-1 spectrum and WWIII spectrum
+    :param l2f_path:
     :param sat: str S1A or ..
     :param wv: str wv1 or wv2
     :param stop_analysis_period: datetime (-> period considered T-1 month : T)
@@ -80,25 +112,27 @@ def compute_kpi_1d(sat, wv, dev=False, stop_analysis_period=None, period_analyse
         stop_current_month = datetime.datetime.today()
     else:
         stop_current_month = stop_analysis_period
+
     start_current_month = stop_current_month - datetime.timedelta(days=period_analysed_width)
     start_prior_period = start_current_month - datetime.timedelta(days=30 * PRIOR_PERIOD)
     stop_prior_period = start_current_month
     nb_measu_total = 0
+
     if df is None:
         df = load_Level2_series(satellite=sat, start=start_prior_period, stop=stop_current_month,
-                                alternative_L2F=alternative_L2F)
+                                l2f_path=l2f_path)
 
-    logging.debug('start_current_month : %s', start_current_month)
-    logging.debug('stop_current_month : %s', stop_current_month)
+    log.debug(f'start_current_month : {start_current_month}', )
+    log.debug(f'stop_current_month : {stop_current_month}')
 
-    logging.debug('prior period ; %s to %s', start_prior_period, stop_prior_period)
+    log.debug(f'prior period ; {start_prior_period} to {stop_analysis_period}')
     _swh_azc_mod = df['ww3_effective_2Dcutoff_hs'].values
-    logging.debug('nb value WW3 eff Hs above 25 m : %s', (_swh_azc_mod > 25).sum())
+    log.debug('nb value WW3 eff Hs above 25 m : %s', (_swh_azc_mod > 25).sum())
     if (_swh_azc_mod > 25).sum() > 0:
         ind_bad_ww3 = np.where(_swh_azc_mod > 25)[0][0]
-        logging.debug('a date SAR for which ww3 is extremely too high: %s -> Hs:%1.1fm',
-                      df['fdatedt'][ind_bad_ww3], _swh_azc_mod[ind_bad_ww3])
-    logging.debug('max Hs WW3 : %s', np.nanmax(_swh_azc_mod))
+        log.debug(
+            f'a date SAR for which ww3 is extremely too high: {df["fdatedt"][ind_bad_ww3]} -> Hs:{_swh_azc_mod[ind_bad_ww3]:1.1f}m')
+    log.debug('max Hs WW3 : %s', np.nanmax(_swh_azc_mod))
     _swh_azc_s1 = df['s1_effective_hs_2Dcutoff'].values
 
     df['bias_swh_azc_' + wv] = xarray.DataArray(
@@ -110,74 +144,78 @@ def compute_kpi_1d(sat, wv, dev=False, stop_analysis_period=None, period_analyse
     elif wv == 'wv2':
         cond_inc = (df['oswIncidenceAngle'] > 30)
     else:
-        raise Exception('wv value un expected : %s' % wv)
+        raise ValueError(f'wv value un expected : {wv}')
+
     polarizationcond = (df.pol == POLARIZATION.lower())
-    logging.debug('df.pol %s', df.pol.values)
-    logging.debug('polarizationcond %s', polarizationcond.values.sum())
+    log.debug('df.pol %s', df.pol.values)
+    log.debug('polarizationcond %s', polarizationcond.values.sum())
 
     cond_outlier_ww3_hs = (abs(df['ww3_effective_2Dcutoff_hs']) < 50)
-    logging.debug('cond_outlier_ww3_hs %s', cond_outlier_ww3_hs.values.sum())
+    log.debug('cond_outlier_ww3_hs %s', cond_outlier_ww3_hs.values.sum())
+
     fini_bias = np.isfinite(df['bias_swh_azc_' + wv]) & (abs(df['bias_swh_azc_' + wv]) < 50)
-    logging.debug('fini_bias %s', fini_bias.values.sum())
+    log.debug(f'fini_bias {fini_bias.values.sum()}')
+
     latmax_cond = (abs(df['oswLat']) < LAT_MAX)
-    logging.debug('latmax_cond %s', latmax_cond.values.sum())
+    log.debug(f'latmax_cond {latmax_cond.values.sum()}')
+
     dstmax_cond = (df['dist2coastKM'] > MIN_DIST_2_COAST)
-    logging.debug('dstmax_cond %s', dstmax_cond.values.sum())
+    log.debug(f'dstmax_cond {dstmax_cond.values.sum()}')
+
     ocean_acqui_filters = polarizationcond & latmax_cond & cond_outlier_ww3_hs \
                           & (df['oswLandFlag'] == 0) & dstmax_cond & cond_inc & fini_bias
-    logging.debug('ocean_acqui_filters %s', ocean_acqui_filters.values.sum())
+    log.debug(f'ocean_acqui_filters {ocean_acqui_filters.values.sum()}')
 
-    logging.debug('start_prior_period : %s -> stop_prior_period %s', start_prior_period, stop_prior_period)
-    # logging.debug('fdatetd : %s',df['fdatedt'])
+    log.debug(f'start_prior_period : {start_prior_period} -> {stop_prior_period}', start_prior_period,
+              stop_prior_period)
+
     start_prior_period64 = np.datetime64(start_prior_period)
     stop_prior_period64 = np.datetime64(stop_prior_period)
     mask_prior_period = (df['fdatedt'] >= start_prior_period64) & (df['fdatedt'] <= stop_prior_period64)
     final_mask_prior = ocean_acqui_filters & mask_prior_period
-    logging.debug('final_mask_prior %s', final_mask_prior.values.sum())
-    logging.debug('nb pts in prior period (without extra filters) : %s', mask_prior_period.values.sum())
-    # subset_df = df[final_mask_prior]
+    log.debug(f'final_mask_prior {final_mask_prior.values.sum()}')
+    log.debug(f'nb pts in prior period (without extra filters) : {mask_prior_period.values.sum()}')
+
     subset_df = df.where(final_mask_prior, drop=True)
     nb_nan = np.isnan(subset_df['bias_swh_azc_' + wv].values).sum()
-    # logging.debug('some values: %s',subset_df['bias_swh_azc_' + wv].values)
-    logging.debug('nb_nan : %s', nb_nan)
-    logging.debug('nb finite %s/%s', np.isfinite(subset_df['bias_swh_azc_' + wv].values).sum(),
-                  len(subset_df['bias_swh_azc_' + wv]))
-    # envelop_value = ENVELOP*np.nanstd(subset_df['bias_swh_azc_' + wv].values)
+    log.debug(f'nb_nan : {nb_nan}')
+    log.debug(
+        f'nb finite {np.isfinite(subset_df["bias_swh_azc_" + wv].values).sum()}/{len(subset_df["bias_swh_azc_" + wv])}')
+
     envelop_value = np.percentile(abs(subset_df['bias_swh_azc_' + wv].values), ENVELOP)
-    logging.debug('envelop_value : %s', envelop_value)
+    log.debug('envelop_value : {envelop_value}')
 
     # compute the number of product within the envelop for current month
     start_current_month64 = np.datetime64(start_current_month)
     stop_current_month64 = np.datetime64(stop_current_month)
     current_date_cond = (df['fdatedt'] >= start_current_month64) & (df['fdatedt'] <= stop_current_month64)
-    logging.debug('current_date_cond %s', current_date_cond.values.sum())
-    logging.debug('ocean_acqui_filters %s', ocean_acqui_filters.values.sum())
+    log.debug(f'current_date_cond {current_date_cond.values.sum()}')
+    log.debug(f'ocean_acqui_filters {ocean_acqui_filters.values.sum()}')
     mask_current_month = ocean_acqui_filters & current_date_cond
-    logging.debug('mask_current_month %s', mask_current_month.values.sum())
-    # subset_current_period = df[mask_current_month]
+    log.debug(f'mask_current_month {mask_current_month.values.sum()}')
     subset_current_period = df.where(mask_current_month, drop=True)
     if 'ww3_effective_2Dcutoff_hs' in subset_current_period and len(
             subset_current_period['ww3_effective_2Dcutoff_hs']) > 0:
-        logging.debug('max Hs WW3 in subset : %s', np.nanmax(subset_current_period['ww3_effective_2Dcutoff_hs']))
-        logging.debug('max Hs SAR in subset : %s', np.nanmax(subset_current_period['s1_effective_hs_2Dcutoff']))
-        logging.debug('min Hs WW3 in subset : %s', np.nanmin(subset_current_period['ww3_effective_2Dcutoff_hs']))
-        logging.debug('min Hs SAR in subset : %s', np.nanmin(subset_current_period['s1_effective_hs_2Dcutoff']))
-        logging.debug('nb pts current month : %s', len(subset_current_period['fdatedt']))
+        log.debug(f'max Hs WW3 in subset : {np.nanmax(subset_current_period["ww3_effective_2Dcutoff_hs"])}')
+        log.debug(f'max Hs SAR in subset : {np.nanmax(subset_current_period["s1_effective_hs_2Dcutoff"])}')
+        log.debug(f'min Hs WW3 in subset : {np.nanmin(subset_current_period["ww3_effective_2Dcutoff_hs"])}')
+        log.debug(f'min Hs SAR in subset : {np.nanmin(subset_current_period["s1_effective_hs_2Dcutoff"])}')
+        log.debug(f'nb pts current month : {len(subset_current_period["fdatedt"])}')
         nb_measu_total = len(subset_current_period['fdatedt'])
-        logging.debug('bias : %s', subset_current_period['bias_swh_azc_' + wv].values)
+        log.debug(f'bias : {subset_current_period["bias_swh_azc_" + wv].values}')
 
         # definition proposee par Hajduch le 10dec2021 screenshot a lappuit (je ne suis pas convaincu pas l introduction du biais dans le calcul de levenveloppe car le KPI sera dautant plus elever que le biais sera fort (cest linverse qui est cherche)
         bias_minus_2sigma = abs(subset_current_period['bias_swh_azc_' + wv].mean().values - envelop_value)
         bias_plus_2sigma = abs(subset_current_period['bias_swh_azc_' + wv].mean().values + envelop_value)
-        logging.info('bias_plus_2sigma %s', bias_plus_2sigma)
+        log.info(f'bias_plus_2sigma {bias_plus_2sigma}')
         T = np.max([bias_minus_2sigma, bias_plus_2sigma])
-        logging.info('T : %s %s', T.shape, T)
+        log.info(f'T : {T.shape} {T}')
         nb_measu_inside_envelop = (abs(subset_current_period['bias_swh_azc_' + wv]) < T).sum().values
         std = np.nanstd(subset_current_period['bias_swh_azc_' + wv])
         mean_bias = np.mean(subset_current_period['bias_swh_azc_' + wv]).values
-        logging.debug('nb_measu_inside_envelop : %s', nb_measu_inside_envelop)
+        log.debug(f'nb_measu_inside_envelop : {nb_measu_inside_envelop}')
         kpi_value = 100. * nb_measu_inside_envelop / nb_measu_total
-        logging.debug('kpi_value : %s', kpi_value)
+        log.debug(f'kpi_value : {kpi_value}')
         if dev:
             from matplotlib import pyplot as plt
             plt.figure()
@@ -191,77 +229,100 @@ def compute_kpi_1d(sat, wv, dev=False, stop_analysis_period=None, period_analyse
             plt.xlabel('Hs (m)')
             output = '/home1/scratch/agrouaze/test_histo_kpi_1d.png'
             plt.savefig(output)
-            logging.debug('png test : %s', output)
+            log.debug('png test : %s', output)
             # plt.show()
     else:
         mean_bias = np.nan
         kpi_value = np.nan
         std = np.nan
-        logging.debug('no data for period %s to %s', start_current_month, stop_current_month)
-        logging.debug('subset_current_period %s', subset_current_period)
-    return kpi_value, start_current_month, stop_current_month, envelop_value, nb_measu_total, mean_bias, std
+        log.debug('no data for period %s to %s', start_current_month, stop_current_month)
+        log.debug('subset_current_period %s', subset_current_period)
+
+    return KPI1DData(kpi_value, start_current_month, stop_current_month, envelop_value, nb_measu_total, mean_bias, std)
 
 
-if __name__ == '__main__':
-    root = logging.getLogger()
-    if root.handlers:
-        for handler in root.handlers:
-            root.removeHandler(handler)
-    import argparse
-    import resource
+def get_parser():
+    parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter, description=textwrap.dedent('''
+    Compute KPI-1D and save results as textfile
 
-    time.sleep(np.random.rand(1, 1)[0][0])  # to avoid issue with mkdir
-    parser = argparse.ArgumentParser(description='kpi-1d')
-    parser.add_argument('--verbose', action='store_true', default=False)
-    parser.add_argument('--overwrite', action='store_true', default=False,
-                        help='overwrite the existing outputs [default=False]', required=False)
-    parser.add_argument('--satellite', choices=['S1A', 'S1B'], required=True, help='S-1 unit choice')
-    parser.add_argument('--wv', choices=['wv1', 'wv2'], required=True, help='WV incidence angle choice')
-    parser.add_argument('--enddate', help='end of the 1 month period analysed', required=False, action='store',
-                        default=None)
+    Use configuration file (--config) to avoid a long list of parameters. Example; kpi1b.ini
+
+       [DEFAULT]
+        output=/tmp/output
+        l2f=/tmp
+
+    ! Careful inline arguments in command will overwrite its value in configuration file.
+    '''))
+    parser.add_argument('-v', '--verbose', action='store_true', default=False)
+    parser.add_argument('-f', '--overwrite', action='store_true', default=False,
+                        help='overwrite the existing outputs [default=%(default)s]')
+
+    parser.add_argument('-c', '--config', default=os.getenv('MPC_KPI1D_CONFIG'),
+                        help='Path to the configuration file.')
+
+    parser.add_argument('--enddate', help='end of the 1 month period analysed')
+    parser.add_argument('-o', '--output', help='Path output will be stored')
+    parser.add_argument('--l2f', help='Path to directory for L2F files')
+
+    parser.add_argument('satellite', choices=SATELLITE_LIST,
+                        help='S-1 unit choice')
+    parser.add_argument('wv', choices=WV_LIST,
+                        help='WV incidence angle choice')
+    return parser
+
+
+def setup_log(debug=False):
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.DEBUG if debug else logging.INFO)
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+
+    log.setLevel(logging.DEBUG if debug else logging.INFO)
+    log.addHandler(handler)
+    log.propagate = False
+
+
+def main():
+    parser = get_parser()
     args = parser.parse_args()
 
-    fmt = '%(asctime)s %(levelname)s %(filename)s(%(lineno)d) %(message)s'
+    setup_log(args.verbose)
 
-    if args.verbose:
-        logging.basicConfig(level=logging.DEBUG, format=fmt,
-                            datefmt='%d/%m/%Y %H:%M:%S')
-    else:
-        logging.basicConfig(level=logging.INFO, format=fmt,
-                            datefmt='%d/%m/%Y %H:%M:%S')
     t0 = time.time()
     sat = args.satellite
     wv = args.wv
-    if args.enddate is not None:
-        end_date = datetime.datetime.strptime(args.enddate, '%Y%m%d')
-    else:
-        end_date = args.enddate  # None case
-    # output_file = '/home1/scratch/agrouaze/kpi_1d_v2/%s/kpi_output_%s_%s_%s.txt' % ('v8percentile95',
-    # sat,wv,end_date.strftime('%Y%m%d'))
-    output_file = os.path.join(OUTPUTDIR_KPI_1D, 'v8percentile95',
-                               'kpi_output_%s_%s_%s.txt' % (sat, wv, end_date.strftime('%Y%m%d')))
-    if os.path.exists(output_file) and args.overwrite is False:
-        logging.info('output %s already exists', output_file)
-    else:
-        alternative_L2F = '/home/datawork-cersat-public/project/mpc-sentinel1/analysis/s1_data_analysis/L2_full_daily/0.8/'
-        kpi_v, start_cur_month, stop_cur_month, envelop_val, nbvalused, meanbias, std = compute_kpi_1d(sat, wv=wv,
-                                                                                                       dev=False,
-                                                                                                       stop_analysis_period=end_date,
-                                                                                                       df=None,
-                                                                                                       alternative_L2F=alternative_L2F)
-        logging.info('##########')
-        logging.info('kpi: %s %s :  %1.3f %% (envelop %s-sigma value: %1.3f m)', sat, wv, kpi_v, ENVELOP, envelop_val)
-        logging.info('nb pts used: %s', nbvalused)
-        logging.info('##########')
-        logging.info('start_cur_month : %s stop_cur_month : %s', start_cur_month, stop_cur_month)
 
-        if not os.path.exists(os.path.dirname(output_file)):
-            os.makedirs(os.path.dirname(output_file), 0o0775)
-        fid = open(output_file, 'w')
-        fid.write(
-            '%s %s %s %s %s %s %s\n' % (kpi_v, start_cur_month, stop_cur_month, envelop_val, nbvalused, meanbias, std))
-        fid.close()
-        logging.info('output: %s', output_file)
-        logging.info('done in %1.3f min', (time.time() - t0) / 60.)
-        logging.info('peak memory usage: %s Mbytes', resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.)
-    logging.info('end')
+    config = ConfigParser()
+    if args.config:
+        config.read(args.config)
+
+    output = get_parameter('output', config, args, required=True)
+    l2f = get_parameter('l2f', config, args, required=True)
+    end_date = get_parameter('enddate', config, args, format=parse_date)
+
+    output_file = os.path.join(output, f'kpi_output_{sat}_{wv}_{end_date if end_date else ""}.txt')
+
+    if os.path.exists(output_file) and not args.overwrite:
+        log.info(f'output {output_file} already exists')
+    else:
+        kpi = compute_kpi_1d(sat, wv=wv, dev=False, stop_analysis_period=end_date, df=None,
+                             l2f_path=l2f)
+        log.info('#' * 10)
+        log.info(f'kpi_v {sat} {wv} : {kpi.value} (envelop {ENVELOP}-sigma value: {kpi.envelop_value} dB)')
+        log.info(f'nb pts used: {kpi.count}')
+        log.info('#' * 10)
+        log.info(f'start_cur_month : {kpi.start}, stop_cur_month : {kpi.stop}')
+
+        os.makedirs(os.path.dirname(output_file), 0o0775, exist_ok=True)
+
+        with open(output_file, 'w') as fid:
+            fid.write(str(kpi))
+
+        log.info(f'output: {output_file}')
+        log.info(f'done in {(time.time() - t0) / 60.:1.3f} min')
+        log.info(f'peak memory usage: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.} Mbytes')
+
+    log.info("over")
+
+
+if __name__ == '__main__':
+    main()

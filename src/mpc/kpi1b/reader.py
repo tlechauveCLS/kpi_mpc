@@ -11,7 +11,6 @@ import xarray
 from mpc.kpi1b.compute_wind_azimuth import method_wind_azi_range
 from mpc.kpi1b.gmf_cmod5n import GMFCmod5n
 
-SATELLITE_LIST = ['S1A', 'S1B']
 
 """ 
 read_aggregated_calbration_SLC_WV_level_netcdf_file_for_nrcs_investigations
