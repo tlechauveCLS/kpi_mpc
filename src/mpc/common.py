@@ -1,7 +1,13 @@
+import glob
 from configparser import ConfigParser
+from datetime import datetime
 
-SATELLITE_LIST = ['S1A', 'S1B']
-WV_LIST = ['wv1', 'wv2']
+import numpy as np
+import os
+from pandas import DataFrame
+
+from mpc.kpi1b.parsers import SATELLITE_LIST, WV_LIST
+
 LOG_FORMAT = '%(asctime)s %(levelname)s %(filename)s(%(lineno)d) %(message)s'
 
 
@@ -21,3 +27,38 @@ def get_parameter(name, config: ConfigParser, args, required=False, format=None)
         value = format(value)
 
     return value
+
+
+def get_dataframe(inputs_dir):
+    data = []
+    cpt_corrupt = 0
+
+    for sat in SATELLITE_LIST:
+        for wv in WV_LIST:
+            inputs = sorted(glob.glob(os.path.join(inputs_dir, f'kpi_output_{sat}_{wv}_20*.txt')))
+
+            for input in inputs:
+
+                with open(input) as f:
+                    content = f.readlines()[0].replace('\n', '').split(' ')
+
+                if len(content) == 7:
+                    kpix, stax, _, stox, _, envx, nbx = content
+                    meanbias = std = np.nan
+                elif len(content) == 9:
+                    kpix, stax, _, stox, _, envx, nbx, meanbias, std = content
+                else:
+                    cpt_corrupt += 1
+                    continue
+
+                data.append({'sat': sat,
+                             'wv': wv,
+                             'kpi': float(kpix),
+                             'sta': datetime.strptime(stax, '%Y-%m-%d'),
+                             'sto': datetime.strptime(stox, '%Y-%m-%d'),
+                             'env': float(envx),
+                             'nb': int(nbx),
+                             'bias': float(meanbias),
+                             'std': float(std)})
+
+    return DataFrame(data)

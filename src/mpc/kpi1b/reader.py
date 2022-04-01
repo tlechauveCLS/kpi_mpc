@@ -2,15 +2,16 @@ import glob
 import logging
 import time
 from datetime import datetime
+
 import netCDF4
 import numpy as np
 import os
 import xarray
 
-# first test to look at the content of the daily files SAFE containing the noise and denoised sigma0
 from mpc.kpi1b.compute_wind_azimuth import method_wind_azi_range
 from mpc.kpi1b.gmf_cmod5n import GMFCmod5n
-
+# first test to look at the content of the daily files SAFE containing the noise and denoised sigma0
+from mpc.kpi1b.parsers import SATELLITE_LIST
 
 """ 
 read_aggregated_calbration_SLC_WV_level_netcdf_file_for_nrcs_investigations
@@ -29,7 +30,10 @@ def read_fat_calib_nc(input_files, coastline_netcdf, satellite_list=None):
     for sat in satellite_list:
         pattern = input_files % sat
         logging.info('pattern %s', pattern)
-        output_file_calibration = glob.glob(pattern)[0]
+        try:
+            output_file_calibration = glob.glob(pattern)[0]
+        except IndexError:
+            raise FileNotFoundError(pattern)
         logging.info('found %s', output_file_calibration)
         # logging.debug('is same file %s',output_file_calibration == testf)
         if os.path.exists(output_file_calibration):

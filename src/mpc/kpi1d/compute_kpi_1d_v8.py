@@ -5,21 +5,18 @@ implementaiton : IFREMER
 Dec 2021: after SR#3 + ORR to adjust the KPI
 KPI-1d SLA Vol3 document MPC contract 2021 - 2016
 """
-import argparse
 import datetime
 import logging
 import sys
-import textwrap
 import time
-from configparser import ConfigParser
 
 import numpy as np
 import os
 import resource
 import xarray
-from dateutil.parser import parse as parse_date
 
-from mpc.common import get_parameter, SATELLITE_LIST, WV_LIST, LOG_FORMAT
+from mpc.common import LOG_FORMAT
+from mpc.kpi1d.parsers import compute_parser
 from mpc.kpi1d.read_and_concat_L2F import read_L2F_with_xarray
 
 POLARIZATION = 'VV'
@@ -35,7 +32,7 @@ DS = {'wv1': 3, 'wv2': 5}  # delta
 log = logging.getLogger('mpc.compute_kpi_1d')
 
 
-class KPI1DData:
+class KPI1DItem:
 
     def __init__(self, value: float, start: datetime, stop: datetime, envelop_value: float, count: int,
                  mean_bias: float, std: float):
@@ -92,14 +89,15 @@ def load_Level2_series(satellite, start, stop, l2f_path):
     return dswv
 
 
-def compute_kpi_1d(sat, wv, l2f_path, dev=False, stop_analysis_period=None, period_analysed_width=30, df=None):
+def compute_kpi_1d(satellite, wv, l2f_path, dev=False, enddate=None, period_analysed_width=30, df=None,
+                   output=None, overwrite=False):
     """
     osw VV WV S-1 effective Hs (2D-cutoff) compared to WWIII Hs computed on same grid/same mask
     note that low freq mask is applied both on S-1 spectrum and WWIII spectrum
     :param l2f_path:
     :param sat: str S1A or ..
     :param wv: str wv1 or wv2
-    :param stop_analysis_period: datetime (-> period considered T-1 month : T)
+    :param enddate: datetime (-> period considered T-1 month : T)
     :param period_analysed_width : int 30 days by default
     :return:
         kpi_value (float): between 0 and 100 %
@@ -108,10 +106,10 @@ def compute_kpi_1d(sat, wv, l2f_path, dev=False, stop_analysis_period=None, peri
         envelop_value : (float) 2-sigma m threshold based on 3 months prior period
     """
     # compute the 2 sigma envelopp on the last 3 months prior to current month
-    if stop_analysis_period is None:
+    if enddate is None:
         stop_current_month = datetime.datetime.today()
     else:
-        stop_current_month = stop_analysis_period
+        stop_current_month = enddate
 
     start_current_month = stop_current_month - datetime.timedelta(days=period_analysed_width)
     start_prior_period = start_current_month - datetime.timedelta(days=30 * PRIOR_PERIOD)
@@ -119,13 +117,13 @@ def compute_kpi_1d(sat, wv, l2f_path, dev=False, stop_analysis_period=None, peri
     nb_measu_total = 0
 
     if df is None:
-        df = load_Level2_series(satellite=sat, start=start_prior_period, stop=stop_current_month,
+        df = load_Level2_series(satellite=satellite, start=start_prior_period, stop=stop_current_month,
                                 l2f_path=l2f_path)
 
     log.debug(f'start_current_month : {start_current_month}', )
     log.debug(f'stop_current_month : {stop_current_month}')
 
-    log.debug(f'prior period ; {start_prior_period} to {stop_analysis_period}')
+    log.debug(f'prior period ; {start_prior_period} to {enddate}')
     _swh_azc_mod = df['ww3_effective_2Dcutoff_hs'].values
     log.debug('nb value WW3 eff Hs above 25 m : %s', (_swh_azc_mod > 25).sum())
     if (_swh_azc_mod > 25).sum() > 0:
@@ -238,37 +236,21 @@ def compute_kpi_1d(sat, wv, l2f_path, dev=False, stop_analysis_period=None, peri
         log.debug('no data for period %s to %s', start_current_month, stop_current_month)
         log.debug('subset_current_period %s', subset_current_period)
 
-    return KPI1DData(kpi_value, start_current_month, stop_current_month, envelop_value, nb_measu_total, mean_bias, std)
+    item = KPI1DItem(kpi_value, start_current_month, stop_current_month, envelop_value, nb_measu_total, mean_bias, std)
 
+    if output:
+        output_file = os.path.join(output, f'kpi_output_{sat}_{wv}_{enddate if enddate else ""}.txt')
+        os.makedirs(os.path.dirname(output_file), 0o0775, exist_ok=True)
 
-def get_parser():
-    parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter, description=textwrap.dedent('''
-    Compute KPI-1D and save results as textfile
+        if os.path.exists(output_file) and not overwrite:
+            log.info(f'output {output_file} already exists, skip writing')
+        else:
+            with open(output_file, 'w') as fid:
+                fid.write(str(item))
 
-    Use configuration file (--config) to avoid a long list of parameters. Example; kpi1b.ini
+            log.info(f'output: {output_file}')
 
-       [DEFAULT]
-        output=/tmp/output
-        l2f=/tmp
-
-    ! Careful inline arguments in command will overwrite its value in configuration file.
-    '''))
-    parser.add_argument('-v', '--verbose', action='store_true', default=False)
-    parser.add_argument('-f', '--overwrite', action='store_true', default=False,
-                        help='overwrite the existing outputs [default=%(default)s]')
-
-    parser.add_argument('-c', '--config', default=os.getenv('MPC_KPI1D_CONFIG'),
-                        help='Path to the configuration file.')
-
-    parser.add_argument('--enddate', help='end of the 1 month period analysed')
-    parser.add_argument('-o', '--output', help='Path output will be stored')
-    parser.add_argument('--l2f', help='Path to directory for L2F files')
-
-    parser.add_argument('satellite', choices=SATELLITE_LIST,
-                        help='S-1 unit choice')
-    parser.add_argument('wv', choices=WV_LIST,
-                        help='WV incidence angle choice')
-    return parser
+    return item
 
 
 def setup_log(debug=False):
@@ -282,47 +264,28 @@ def setup_log(debug=False):
 
 
 def main():
-    parser = get_parser()
+    parser = compute_parser()
     args = parser.parse_args()
 
-    setup_log(args.verbose)
+    setup_log(args.debug)
+
+    params = args.func(args)
 
     t0 = time.time()
-    sat = args.satellite
-    wv = args.wv
 
-    config = ConfigParser()
-    if args.config:
-        config.read(args.config)
+    kpi = compute_kpi_1d(**params)
+    log.info('#' * 10)
+    log.info(
+        f'kpi_v {params["satellite"]} {params["wv"]} : {kpi.value} (envelop {ENVELOP}-sigma value: {kpi.envelop_value} dB)')
+    log.info(f'nb pts used: {kpi.count}')
+    log.info('#' * 10)
+    log.info(f'start_cur_month : {kpi.start}, stop_cur_month : {kpi.stop}')
 
-    output = get_parameter('output', config, args, required=True)
-    l2f = get_parameter('l2f', config, args, required=True)
-    end_date = get_parameter('enddate', config, args, format=parse_date)
+    log.info(f'done in {(time.time() - t0) / 60.:1.3f} min')
+    log.info(f'peak memory usage: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.} Mbytes')
 
-    output_file = os.path.join(output, f'kpi_output_{sat}_{wv}_{end_date if end_date else ""}.txt')
 
-    if os.path.exists(output_file) and not args.overwrite:
-        log.info(f'output {output_file} already exists')
-    else:
-        kpi = compute_kpi_1d(sat, wv=wv, dev=False, stop_analysis_period=end_date, df=None,
-                             l2f_path=l2f)
-        log.info('#' * 10)
-        log.info(f'kpi_v {sat} {wv} : {kpi.value} (envelop {ENVELOP}-sigma value: {kpi.envelop_value} dB)')
-        log.info(f'nb pts used: {kpi.count}')
-        log.info('#' * 10)
-        log.info(f'start_cur_month : {kpi.start}, stop_cur_month : {kpi.stop}')
-
-        os.makedirs(os.path.dirname(output_file), 0o0775, exist_ok=True)
-
-        with open(output_file, 'w') as fid:
-            fid.write(str(kpi))
-
-        log.info(f'output: {output_file}')
-        log.info(f'done in {(time.time() - t0) / 60.:1.3f} min')
-        log.info(f'peak memory usage: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.} Mbytes')
-
-    log.info("over")
-
+log.info("over")
 
 if __name__ == '__main__':
     main()

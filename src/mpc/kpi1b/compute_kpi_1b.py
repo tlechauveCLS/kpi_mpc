@@ -7,16 +7,14 @@ KPI-1b SLA Vol3 document MPC contract 2021 - 2016
 import datetime
 import logging
 import sys
-import textwrap
 import time
-import argparse
-from configparser import ConfigParser
 
-import resource
-from dateutil.parser import parse as parse_date
 import numpy as np
 import os
-from mpc.common import get_parameter, SATELLITE_LIST, WV_LIST, LOG_FORMAT
+import resource
+
+from mpc.common import LOG_FORMAT
+from mpc.kpi1b.parsers import compute_parser
 from mpc.kpi1b.reader import read_fat_calib_nc
 
 POLARIZATION = 'VV'
@@ -30,7 +28,7 @@ MIN_DIST_2_COAST = 100  # km
 log = logging.getLogger('mpc.compute_kpi_1b')
 
 
-class KPI1BData:
+class KPI1BItem:
 
     def __init__(self, value: float, start: datetime, stop: datetime, envelop_value: float, count: int, count_in: int,
                  mean_bias: float, std: float):
@@ -57,25 +55,25 @@ class KPI1BData:
         return f'{self.value} {self.start} {self.stop} {self.envelop_value} {self.count} {self.count_in} {self.mean_bias} {self.std}'
 
 
-def compute_kpi_1b(sat: str, wv: str, input_path_pattern: str, coastline_netcdf: str,
-                   stop_analysis_period: datetime = None, df_slc_sat=None):
+def compute_kpi_1b(satellite: str, wv: str, inputs_path_pattern: str, coastline_netcdf: str,
+                   enddate: datetime = None, df_slc_sat=None, output=None, overwrite=False):
     """
     NRCS (denoised) observed compared to predicted GMF CMOD5n
     :param sat: S1A or ..
     :param wv: wv1 or wv2
-    :param stop_analysis_period: datetime (-> period considered date-1 month : date)
+    :param enddate: datetime (-> period considered date-1 month : date)
     :param df_slc_sat:
     :return:
         a KPI_1B object
 
     """
     if df_slc_sat is None:
-        df_slc_sat = read_fat_calib_nc(input_path_pattern, coastline_netcdf, satellite_list=[sat])
+        df_slc_sat = read_fat_calib_nc(inputs_path_pattern, coastline_netcdf, satellite_list=[satellite])
 
-    if stop_analysis_period is None:
+    if enddate is None:
         stop_current_month = datetime.datetime.today()
     else:
-        stop_current_month = stop_analysis_period
+        stop_current_month = enddate
 
     start_current_month = stop_current_month - datetime.timedelta(days=30)
     log.debug('start_current_month : %s', start_current_month)
@@ -83,7 +81,7 @@ def compute_kpi_1b(sat: str, wv: str, input_path_pattern: str, coastline_netcdf:
     # compute the 2 sigma envelopp on the last 3 months prior to current month
     start_prior_period = start_current_month - datetime.timedelta(days=30 * PRIOR_PERIOD)
     stop_prior_period = start_current_month
-    df_slc = df_slc_sat[sat]
+    df_slc = df_slc_sat[satellite]
     df_slc['direct_diff_calib_cst_db'] = df_slc['sigma0_denoised_db'] - df_slc['tmp_gmf_cmod5n_nrcs_db']
     if wv == 'wv1':
         cond_inc = (df_slc['_inc_sar'] < 30)
@@ -129,42 +127,22 @@ def compute_kpi_1b(sat: str, wv: str, input_path_pattern: str, coastline_netcdf:
 
     log.debug('kpi_value : %s', kpi_value)
 
-    return KPI1BData(kpi_value, start_current_month, stop_current_month, envelop_value, nb_measu_total,
+    item = KPI1BItem(kpi_value, start_current_month, stop_current_month, envelop_value, nb_measu_total,
                      nb_measu_inside_envelop, mean_bias, std)
 
+    if output:
+        output_file = os.path.join(output, f'kpi_output_{satellite}_{wv}_{enddate if enddate else ""}.txt')
+        os.makedirs(os.path.dirname(output_file), 0o0775, exist_ok=True)
 
-def get_parser():
-    parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter, description=textwrap.dedent('''
-    Compute KPI-1B and save results as textfile
-    
-    Use configuration file (--config) to avoid a long list of parameters. Example; kpi1b.ini
-    
-       [DEFAULT]
-        output=/tmp/output
-        coastline_netcdf=/tmp/NASA_tiff_distance_to_coast_converted_v2.nc
-        input_path_pattern=/tmp/%%s_wv_ocean_calibration_CMOD5n_ecmwf0125_windspeed_weighted_slc_level1_20150101_today_runv16.nc
-        
-    ! Careful inline arguments in command will overwrite its value in configuration file.
-    '''))
-    parser.add_argument('-v', '--verbose', action='store_true', default=False)
-    parser.add_argument('-f', '--overwrite', action='store_true', default=False,
-                        help='overwrite the existing outputs [default=%(default)s]')
+        if os.path.exists(output_file) and not overwrite:
+            log.info(f'output {output_file} already exists, skip writing')
+        else:
+            with open(output_file, 'w') as fid:
+                fid.write(str(item))
 
-    parser.add_argument('-c', '--config', default=os.getenv('MPC_KPI1B_CONFIG'),
-                        help='Path to the configuration file.')
+            log.info(f'output: {output_file}')
 
-    parser.add_argument('--enddate', help='end of the 1 month period analysed')
-    parser.add_argument('-o', '--output', help='Path output will be stored')
-    parser.add_argument('--coastline-netcdf', help='Coastline NetCDF')
-    parser.add_argument('--inputs-path-pattern', help='Path to input files as pattern, the satellite unit will be'
-                                                      'passed as parameter for this pattern. Use %%s where the unit'
-                                                      'should be placed in the filename. Use %%%%s in the configfile')
-
-    parser.add_argument('satellite', choices=SATELLITE_LIST,
-                        help='S-1 unit choice')
-    parser.add_argument('wv', choices=WV_LIST,
-                        help='WV incidence angle choice')
-    return parser
+    return item
 
 
 def setup_log(debug=False):
@@ -178,43 +156,23 @@ def setup_log(debug=False):
 
 
 def main():
-    parser = get_parser()
+    parser = compute_parser()
     args = parser.parse_args()
+    setup_log(args.debug)
 
-    setup_log(args.verbose)
+    params = args.func(args)
 
     t0 = time.time()
-    sat = args.satellite
-    wv = args.wv
 
-    config = ConfigParser()
-    if args.config:
-        config.read(args.config)
+    kpi = compute_kpi_1b(**params)
+    log.info('#' * 10)
+    log.info(
+        f'kpi_v {params["satellite"]} {params["wv"]} : {kpi.value} (envelop {ENVELOP}-sigma value: {kpi.envelop_value} dB)')
+    log.info('#' * 10)
+    log.info(f'start_cur_month : {kpi.start}, stop_cur_month : {kpi.stop}')
 
-    output = get_parameter('output', config, args, required=True)
-    coastline_netcdf = get_parameter('coastline_netcdf', config, args, required=True)
-    input_path_pattern = get_parameter('input_path_pattern', config, args, required=True)
-    end_date = get_parameter('enddate', config, args, format=parse_date)
-
-    output_file = os.path.join(output, f'kpi_output_{sat}_{wv}_{end_date if end_date else ""}.txt')
-
-    if os.path.exists(output_file) and not args.overwrite:
-        log.info(f'output {output_file} already exists')
-    else:
-        kpi = compute_kpi_1b(sat, wv, input_path_pattern, coastline_netcdf, stop_analysis_period=end_date)
-        log.info('#' * 10)
-        log.info(f'kpi_v {sat} {wv} : {kpi.value} (envelop {ENVELOP}-sigma value: {kpi.envelop_value} dB)')
-        log.info('#' * 10)
-        log.info(f'start_cur_month : {kpi.start}, stop_cur_month : {kpi.stop}')
-
-        os.makedirs(os.path.dirname(output_file), 0o0775, exist_ok=True)
-
-        with open(output_file, 'w') as fid:
-            fid.write(str(kpi))
-
-        log.info(f'output: {output_file}')
-        log.info(f'done in {(time.time() - t0) / 60.:1.3f} min')
-        log.info(f'peak memory usage: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.} Mbytes')
+    log.info(f'done in {(time.time() - t0) / 60.:1.3f} min')
+    log.info(f'peak memory usage: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.} Mbytes')
 
     log.info("over")
 
