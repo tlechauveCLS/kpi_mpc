@@ -29,13 +29,17 @@ def get_parameter(name, config: ConfigParser, args, required=False, format=None)
     return value
 
 
-def get_dataframe(inputs_dir):
+def get_dataframe(inputs_dir, dt: datetime = None):
     data = []
     cpt_corrupt = 0
 
     for sat in SATELLITE_LIST:
         for wv in WV_LIST:
-            inputs = sorted(glob.glob(os.path.join(inputs_dir, f'kpi_output_{sat}_{wv}_20*.txt')))
+            if dt:
+                day = dt.strftime('%Y%m%d')
+            else:
+                day = '20*'
+            inputs = sorted(glob.glob(os.path.join(inputs_dir, f'kpi_output_{sat}_{wv}_{day}.txt')))
 
             for input in inputs:
 
